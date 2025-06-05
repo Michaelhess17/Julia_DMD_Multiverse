@@ -1,40 +1,43 @@
-using Flux, Flux.Optimise, CUDA, Statistics, ProgressMeter
+using Flux, Flux.Optimise, Statistics, ProgressMeter
 using LinearAlgebra
 using Plots, NPZ
 using DSP
+using JLD2
 # using Enzyme
 # using BackwardsLinalg
 
-include("utils/phaser.jl")
-include("tmp.jl")
+# include("../utils/phaser.jl")
+# include("tmp.jl")
+include("residualDMD.jl")
 
-function fit_model(idx::Int, T::Type)
-    data = load_data(idx, T, device)
-
-
-    layer_1_size = 64
-    layer_2_size = Int(layer_1_size // 2)
-
-    latent_dim = 32
-
-    # encoder
-    model = Chain(Dense(size(data, 1) => layer_1_size, selu),
+T = Float32
+device = cpu_device()
+function get_model(data_size::Int, layer_1_size::Int, layer_2_size::Int, latent_dim::Int, device)
+    model = Chain(Dense(data_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_2_size, selu),
                     Dense(layer_2_size => latent_dim, selu), # ) |> device
-    # decoder = Chain(
+
                     Dense(latent_dim => layer_2_size, selu),
                     Dense(layer_2_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
-                    Dense(layer_1_size => size(data, 1))) |> device
-        
+                    Dense(layer_1_size => data_size)) |> device
+    return model
+end
+
+
+function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADevice}=cpu_device(), layer_1_size::Int=128, latent_dim::Int=32, epochs::Int=1200)
+
+
+    layer_2_size = Int(layer_1_size // 2)
+
+    model = get_model(size(data, 1), layer_1_size, layer_2_size, latent_dim, device)
 
     loader = Flux.DataLoader(data, batchsize=128, shuffle=false);
 
     opt_state = Flux.setup(Optimiser([Flux.Adam(0.0003)]), model)  # will store optimiser momentum, etc.
 
     # Training loop, using the whole data set 1000 times:
-    epochs = 1500
     losses = zeros(T, epochs)
     best_loss = T(Inf)
     best_model = nothing
@@ -46,19 +49,7 @@ function fit_model(idx::Int, T::Type)
         for x in loader
             Y = x |> device
             # grads = Flux.gradient(train_one, dup_model, Const(Y)) # use Enzyme
-            grads = nothing
-            try
-                grads = Flux.gradient(train_one, model, Y)
-            catch e
-                @show e
-                if isa(e, ArgumentError)
-                    warning("Gradient calculation failed due to $e. Retrying with perturbed weights...")
-                    model.layers[3].weight .+= 1e-4.*randn(size(model.layers[3].weight)...)
-                    grads = Flux.gradient(train_one, model, Y)
-                else
-                    rethrow(e)
-                end
-            end
+            grads = Flux.gradient(train_one, model, Y)
             Flux.update!(opt_state, model, grads[1])
             loss = train_one(model, Y)
             losses[epoch] = loss  # logging, outside gradient context
@@ -72,8 +63,8 @@ function fit_model(idx::Int, T::Type)
     return best_model, losses
 end
 
-function train_one(m::Chain, y::AbstractArray{T}, α1::T=1, α2::T=1, α3::T=1, α4::T=1e-9)
-    enc, dec = Chain(m.layers[1:3]), Chain(m.layers[4:end])
+function train_one(m::Chain, y::AbstractArray{S}, α1=1.0, α2=1.0, α3=1.0, α4=1e-9) where S <: AbstractFloat
+    enc, dec = Chain(m.layers[1:4]), Chain(m.layers[5:end])
     Ψ = enc(y)
     Ȳ = dec(Ψ)
 
@@ -112,11 +103,9 @@ function train_one(m::Chain, y::AbstractArray{T}, α1::T=1, α2::T=1, α3::T=1, 
 end
 
 function get_eigs(m::Chain, y::AbstractArray{T})
-    enc, dec = Chain(m.layers[1:3]), Chain(m.layers[4:end])
+    enc, dec = Chain(m.layers[1:4]), Chain(m.layers[5:end])
     Ψ = enc(y)
     Ȳ = dec(Ψ)
-
-    reconstruction_loss = sum(abs2, Ȳ .- y)
 
     Ψ_minus = @view Ψ[:, 1:end-1]
     Ψ_plus = @view Ψ[:, 2:end]
@@ -126,26 +115,22 @@ function get_eigs(m::Chain, y::AbstractArray{T})
     return E, V
 end
 
-function load_data(idx::Int, T::DataType, device::Union{CPUDevice, CUDADevice})
-    data = T.(transpose(npzread("/home/michael/Synology/Julia/data/human_data.npy")[idx, :, :]::Matrix))
-    dt = 0.01
-    t = T.(collect(LinRange(0.0, size(data, 2)*dt, size(data, 2)))) |> device
-
-    responsetype = Lowpass(5.5)
-    designmethod = Butterworth(4)
-    for jj in 1:size(data, 1)
-        data[jj, :] = filtfilt(digitalfilter(responsetype, designmethod; fs=Int(1/dt)), data[jj, :])
-    end
-
-    data .-= mean(data, dims=2)
-    return data
-end
 
 function train_until_converged(f::Function, jj::Int, max_retries::Int=5)
     converged = false
     attempt = 1
-    best_loss = Inf
+    best_loss = [Inf]
     best_model = Chain()
+    try
+        best_loss, best_model = losses[jj], models[jj]
+    catch e
+        if e isa UndefRefError
+            best_loss = [Inf]
+            best_model = Chain()
+        else
+            rethrow(e)
+        end
+    end
     while attempt < max_retries &&  ~converged
         try
             model, loss = f(jj)
@@ -160,6 +145,7 @@ function train_until_converged(f::Function, jj::Int, max_retries::Int=5)
                 attempt += 1
             end
         catch e
+            @warn e
             attempt += 1
         end
     end
@@ -168,55 +154,19 @@ function train_until_converged(f::Function, jj::Int, max_retries::Int=5)
     end
 end
 
-
-numSubjects = 72
-T = Float32
-
-models = Vector{Chain}(undef, numSubjects)
-losses = Vector{Vector{T}}(undef, numSubjects)
-
-f(x::Int) = fit_model(x, T)
-convergence_threshold = 120
-max_retries = 5
-p = Progress(numSubjects, color=:red)
-
-Threads.@threads for jj in 1:numSubjects
-    train_until_converged(f, jj, max_retries)
-end
-
-# rerun failures with more retries
-max_retries = 10
-redos = findall([minimum(loss)>convergence_threshold for loss in losses])
-p = Progress(length(redos), color=:red)
-Threads.@threads for jj in redos
-    train_until_converged(f, jj, max_retries)
-end
-
-eigs = fill!(Vector{Vector{Complex{T}}}(undef, numSubjects), T[(NaN)])
-
-for jj in 1:numSubjects
-    data = load_data(jj, T, device)
-    if minimum(losses[jj]) < convergence_threshold
-        eigs[jj] = get_eigs(models[jj], data)[1]
+function get_defined_indices(X::AbstractArray)
+    good_indices = Int[]
+    for idx in eachindex(X)
+        try
+            y = X[idx]
+            push!(good_indices, idx)
+        catch e
+            if e isa UndefRefError
+                nothing
+            else
+                rethrow(e)
+            end
+        end
     end
+    return good_indices
 end
-
-
-
-plot_array = []
-for jj in 1:numSubjects
-    scatter(real.(eigs[jj]), imag.(eigs[jj]), xlabel=nothing, ylabel=nothing, legend=false)
-    fig = plot!(cos.(0.0:0.1:2.1pi), sin.(0.0:0.1:2.1pi), aspect_ratio=1)
-    push!(plot_array, fig)
-end
-plot(plot_array[1:3:numSubjects]..., layout=(6, 4), size=(1600, 1200))
-
-# out = hcat(run_model(best_model, data[:, 1], size(data, 2)-1)...) |> cpu
-# Flux.mse(out, data[:, 2:end])
-
-# plot(out' |> cpu)
-
-# X, Y = data[:, 1:end-1]', data[:, 2:end]'
-# K = X \ Y
-
-# out2 = vcat(run_model(K, data[:, 1], size(data, 2)-1)...) |> cpu
