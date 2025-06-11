@@ -21,18 +21,19 @@ function load_data(idx::Int, T::DataType, device::Union{CPUDevice, CUDADevice}, 
     end
 
     data .-= mean(data, dims=2)
+    data ./= std(data, dims=2)
     return data
 end
 
 numSubjects = 299
 layer_1_size = 128
-latent_dim = 64
-epochs = 700
+latent_dim = 32
+epochs = 500
 max_retries = 5
 device = cpu_device()
 models = Vector{Chain}(undef, numSubjects)
 losses = Vector{Vector{T}}(undef, numSubjects)
-convergence_threshold = 1000
+convergence_threshold = 5e-3
 p = Progress(numSubjects, color=:red)
 
 all_data = Vector{Matrix{T}}(undef, numSubjects)
@@ -43,7 +44,7 @@ end
 
 
 Threads.@threads for jj in 1:numSubjects
-    f(x::Int) = fit_model(all_data[jj], T, device, layer_1_size, latent_dim, epochs)
+    f(x::Int) = fit_model(all_data[x], T, device, layer_1_size, latent_dim, epochs)
     train_until_converged(f, jj, max_retries)
     next!(p)
 end

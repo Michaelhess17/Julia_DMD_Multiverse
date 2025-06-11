@@ -13,6 +13,7 @@ eigenvalues = results["eigs"]
 
 AB_inds = 1:30
 ST_inds = 31:72
+dt = 0.01
 model_inds = CartesianIndices(eigenvalues)
 
 all_inds = vcat(AB_inds, ST_inds)
@@ -38,7 +39,9 @@ function get_var_explained_Fourier_eigs(model::Chain, y::AbstractArray, cutoff_d
     Ψ_plus = @view Ψ[:, 2:end]
 
     K = Ψ_plus * pinv(Ψ_minus)
-    E, V = eigen(K |> cpu) |> device
+    # F = svd(Ψ_minus)
+    # K = F.U'*Ψ_plus*F.V*inv(Diagonal(F.S))
+    E, V = eigen(K)
 
     k = V \ Ψ[:, 1]
 
@@ -64,18 +67,12 @@ function get_var_explained_Fourier_eigs(model::Chain, y::AbstractArray, n_eigs::
 
     Ψ_minus = @view Ψ[:, 1:end-1]
     Ψ_plus = @view Ψ[:, 2:end]
-
-    K = Ψ_plus * pinv(Ψ_minus)
-    E, V = eigen(K |> cpu) |> device
-
-    k = V \ Ψ[:, 1]
-
-    eig_inds = sortperm(abs.(E))
-    E = E[eig_inds]
-    E[end-n_eigs+1:end] .= 0.0+0.0im
+    _, _, _, ind, E, V = get_dmd_powers(model, y, true)
+    E[1:n_eigs] .= 0.0+0.0im
     E_Diagonal = Matrix(Diagonal(E))
 
     A = V*E_Diagonal*pinv(V)
+    k = V \ Ψ[ind, 1]
     Ψ̂ = reduce(hcat, [real.(V*E_Diagonal^(jj)*k) for jj in collect(1:size(Ψ_minus, 2))::Vector{Int}])
 
     residual = dec(Ψ̂ ) .- y[:, 2:end]
@@ -87,27 +84,27 @@ function get_model(data_size::Int, layer_1_size::Int, layer_2_size::Int, latent_
     model = Chain(Dense(data_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_2_size, selu),
-                    Dense(layer_2_size => latent_dim, selu), # ) |> device
+                    Dense(layer_2_size => latent_dim), # ) 
 
                     Dense(latent_dim => layer_2_size, selu),
                     Dense(layer_2_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
-                    Dense(layer_1_size => data_size)) |> device
+                    Dense(layer_1_size => data_size)) 
     return model
 end
 
-function get_eigs_scaled(m::Chain, y::AbstractArray{T})
+function get_dmd_powers(m::Chain, y::AbstractArray{T}, return_eigs::Bool=false)
     enc, dec = Chain(m.layers[1:4]), Chain(m.layers[5:end])
     Ψ = enc(y)
     Ȳ = dec(Ψ)
 
+    Ψ .-= mean(Ψ, dims=2)
     Ψ_minus = @view Ψ[:, 1:end-1]
     Ψ_plus = @view Ψ[:, 2:end]
 
-    # K = Ψ_plus * pinv(Ψ_minus)
     F = svd(Ψ_minus)
-    # K = Ψ_plus*F.V*inv(Diagonal(F.S))*F.U'
-    K = F.U'*Ψ_plus*F.V*inv(Diagonal(F.S))
+    # K = F.U'*Ψ_plus*F.V*inv(Diagonal(F.S))
+    K = Ψ_plus * pinv(Ψ_minus)
     
     E, V = eigen(inv(Diagonal(sqrt.(F.S)))*K*Diagonal(sqrt.(F.S)))
     W = Diagonal(sqrt.(F.S))*V
@@ -117,7 +114,14 @@ function get_eigs_scaled(m::Chain, y::AbstractArray{T})
     ω = log.(E) ./ dt
     freqs = abs.(imag.(ω) / 2pi)
     powers = [norm(col)^2 for col in eachcol(modes)]
-    return E, V
+
+    if return_eigs
+        ind = sortperm(powers)
+        E, V = E[ind], V[:, ind]
+        return freqs[ind], powers[ind], ω[ind], ind, E, V
+    else
+        return freqs, powers, ω, ind
+    end
 end
 
 
@@ -146,10 +150,80 @@ axislegend(position=:lb)
 save("figures/percent_var_explained_vs_median_transient_eigs_64_dims_mice.png", fig)
 
 
-ts = range(0, stop=5, step=1/fs)  # seconds
-signal = y[1, :]
-#  plot(ts, signal)   # > 200K points, better to use InspectDR
-n = length(signal)
-nw = n÷50
-spec = spectrogram(signal, nw, nw÷2; fs=fs)
-heatmap(spec.time, spec.freq, spec.power, xguide="Time [s]", yguide="Frequency [Hz]")
+freqs_powers_ω = [get_dmd_powers(m, y) for (ii, (m, y)) in enumerate(zip(loaded_models2, all_data2)) if ii ∉ skip_inds]
+freqs = reduce(hcat, [reverse(freq_power[1]) for freq_power in freqs_powers_ω])
+powers = reduce(hcat, [reverse(freq_power[2]) for freq_power in freqs_powers_ω])
+ωs = reduce(hcat, [reverse(freq_power[3]) for freq_power in freqs_powers_ω])
+Es = reduce(hcat, [reverse(freq_power[4]) for freq_power in freqs_powers_ω])
+Vs = permutedims(stack([freq_power[5][:, end:-1:1] for freq_power in freqs_powers_ω], dims=3), (3, 1, 2))
+
+for idx in 1:length(powers)
+    mask = freqs[idx] .== 0.0
+    powers[idx][mask] .= 0.0
+end 
+
+fig = Figure()
+use_AB = [12]
+use_ST = [52]
+ax = Axis(fig[1, 1], xlabel=L"\Re{\frac{\log{\lambda}}{\Delta t}}", ylabel="Freqency [Hz]")
+[CairoMakie.scatter!(ax, real.(ωs[ind]), freqs[ind], markersize=20*powers[ind]./maximum(powers[ind]), color=:dodgerblue, label="AB") for ind in use_AB]
+[CairoMakie.scatter!(ax, real.(ωs[ind]), freqs[ind], markersize=20*powers[ind]./maximum(powers[ind]), color=:crimson, label="ST") for ind in use_ST]
+CairoMakie.xlims!(ax, -2, 0.2)
+axislegend(merge=true)
+save("tmp2.png", fig)
+
+
+n = 119
+N = size(Es, 2)
+max_rank = 24
+# Separate data for each group
+group1_eigenvalues = Es'[1:n, 1:2:max_rank]
+group2_eigenvalues = Es'[(n + 1):end, 1:2:max_rank]
+
+# Calculate the mean absolute eigenvalue for each rank in each group
+# We use `abs` because the request is for "absolute values"
+mean_abs_group1 = mean(abs.(group1_eigenvalues), dims=1)[1, :]
+mean_abs_group2 = mean(abs.(group2_eigenvalues), dims=1)[1, :]
+sem_group1 = std(abs.(group1_eigenvalues), dims=1)[1, :]# / sqrt(n)
+sem_group2 = std(abs.(group2_eigenvalues), dims=1)[1, :]# / sqrt(N - n)
+
+
+df = DataFrame(
+    Rank = Int64[], # For "G1", "G2" etc. or "Rank 1", "Rank 2"
+    MeanAbsEigenvalue = Float64[],
+    Group = String[],
+    yErr = Float64[]
+)
+
+# Populate the DataFrame
+jj = 1
+for i in 1:2:max_rank
+    @show jj
+    push!(df, (jj, mean_abs_group1[jj], "Tied", sem_group1[jj]))
+    push!(df, (jj, mean_abs_group2[jj], "Split", sem_group2[jj]))
+    jj += 1
+end
+
+println("\nDataFrame for plotting (first 5 rows):")
+display(first(df, 5))
+
+# --- 4. Create the Grouped Bar Plot ---
+
+p = groupedbar(df.Rank, df.MeanAbsEigenvalue,
+        group = df.Group, # This tells groupedbar how to group the bars
+        ylabel = L"\Re{\frac{\log{\lambda}}{\Delta t}}",
+        xlabel = L"\lambda \quad \textrm{Rank}",
+        legend = :bottomleft,
+        yerr= df.yErr,
+        # palette = :Set1,
+        palette = [:dodgerblue, :crimson],
+        lw = 0.5,
+        framestyle = :box,
+        grid = :y,
+        # size = (900, 600),
+        yformatter = :plain, # Prevents scientific notation on y-axis if values are small
+        margin=5mm
+        )
+
+# You can save the plot
+savefig(p, "eigenvalue_comparison_barplot_mice.png")
