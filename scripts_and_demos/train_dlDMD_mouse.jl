@@ -29,20 +29,19 @@ function load_data(T::DataType)
     data = permutedims(cat([transpose(timeDelayEmbed(data[idx, :, :], τ, k))::AbstractArray{T} for idx in 1:size(data, 1)]..., dims=3), (3, 2, 1))
     return data, speeds
 end
-0.275 -> normal tied, 0.175 -> normal split
-0.2 -> mutant tied, 0.125 -> mutant split
+
 HC_tied_inds = findall(speed .== 0.275f0)
 HC_split_inds = findall(speed .== 0.175f0)
 PCD_tied = findall(speed .== 0.20f0)
 PCD_split = findall(speed .== 0.125f0)
 
 numSubjects = 203
-layer_1_size = 256
-latent_dim = 64
+layer_1_size = 128
+latent_dim = 16
 epochs = 500
 models = Vector{Chain}(undef, (numSubjects))
 losses = Vector{Vector{T}}(undef, numSubjects)
-convergence_threshold = 1600
+convergence_threshold = 0.5
 max_retries = 5
 
 device = cpu_device()
