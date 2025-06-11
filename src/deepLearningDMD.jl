@@ -16,12 +16,12 @@ function get_model(data_size::Int, layer_1_size::Int, layer_2_size::Int, latent_
     model = Chain(Dense(data_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_2_size, selu),
-                    Dense(layer_2_size => latent_dim, selu), # ) |> device
+                    Dense(layer_2_size => latent_dim), # ) 
 
                     Dense(latent_dim => layer_2_size, selu),
                     Dense(layer_2_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
-                    Dense(layer_1_size => data_size)) |> device
+                    Dense(layer_1_size => data_size)) 
     return model
 end
 
@@ -33,7 +33,7 @@ function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADe
 
     model = get_model(size(data, 1), layer_1_size, layer_2_size, latent_dim, device)
 
-    loader = Flux.DataLoader(data, batchsize=128, shuffle=false);
+    loader = Flux.DataLoader(data, batchsize=128, shuffle=false, partial=false);
 
     opt_state = Flux.setup(Optimiser([Flux.Adam(0.0003)]), model)  # will store optimiser momentum, etc.
 
@@ -46,8 +46,7 @@ function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADe
     p = Progress(epochs)
     for epoch in 1:epochs
         loss = nothing
-        for x in loader
-            Y = x |> device
+        for Y in loader
             # grads = Flux.gradient(train_one, dup_model, Const(Y)) # use Enzyme
             grads = Flux.gradient(train_one, model, Y)
             Flux.update!(opt_state, model, grads[1])
@@ -68,22 +67,24 @@ function train_one(m::Chain, y::AbstractArray{S}, α1=1.0, α2=1.0, α3=1.0, α4
     Ψ = enc(y)
     Ȳ = dec(Ψ)
 
-    reconstruction_loss = sum(abs2, Ȳ .- y)
+    reconstruction_loss = Flux.mse(Ȳ, y)
 
     Ψ_minus = @view Ψ[:, 1:end-1]
     Ψ_plus = @view Ψ[:, 2:end]
 
     K = Ψ_plus * pinv(Ψ_minus)
-    E, V = eigen(K |> cpu) |> device
+    F = svd(Ψ_minus)
+    # K = F.U'*Ψ_plus*F.V*inv(Diagonal(F.S))
+    E, V = eigen(K)
 
     k = V \ Ψ[:, 1]
     A = V*Diagonal(E)*pinv(V)
     Ψ̂ = reduce(hcat, [real.(V*Diagonal(E)^(jj)*k) for jj in collect(1:size(Ψ_minus, 2))::Vector{Int}])
     Ŷ = dec(Ψ̂ )
 
-    F = svd(Ψ_minus)
-    linearity_loss = sum(abs2, Ψ_plus*(I - F.V*F.Vt))
-    dmd_loss = sum(abs2, Ŷ .- y[:, 2:end])
+    linearity_mat = Ψ_plus*(I(size(Ψ_minus, 2)) .- F.V*F.Vt)
+    linearity_loss = sum(abs2, linearity_mat) / length(linearity_mat)
+    dmd_loss = Flux.mse(Ŷ, y[:, 2:end])
 
     l1_loss = 0
     # Regularize encoder weights
@@ -98,7 +99,7 @@ function train_one(m::Chain, y::AbstractArray{S}, α1=1.0, α2=1.0, α3=1.0, α4
             l1_loss += sum(abs, layer.weight)
         end
     end
-    total_loss = (α1*reconstruction_loss + α2*linearity_loss + α3*dmd_loss) + α4*l1_loss
+    total_loss = α1*reconstruction_loss + α2*linearity_loss + α3*dmd_loss + α4*l1_loss
     return total_loss
 end
 
@@ -111,7 +112,9 @@ function get_eigs(m::Chain, y::AbstractArray{T})
     Ψ_plus = @view Ψ[:, 2:end]
 
     K = Ψ_plus * pinv(Ψ_minus)
-    E, V = eigen(K |> cpu) |> device
+    F = svd(Ψ_minus)
+    # K = F.U'*Ψ_plus*F.V*inv(Diagonal(F.S))
+    E, V = eigen(K) 
     return E, V
 end
 
