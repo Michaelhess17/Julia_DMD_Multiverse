@@ -26,18 +26,12 @@ function get_model(data_size::Int, layer_1_size::Int, layer_2_size::Int, latent_
 end
 
 
-function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADevice}=cpu_device(), layer_1_size::Int=128, latent_dim::Int=32, epochs::Int=1200)
-
-
+function fit_model(X::AbstractArray, Y::AbstractArray, T::Type, device::Union{CPUDevice, CUDADevice}=cpu_device(), layer_1_size::Int=128, latent_dim::Int=32, epochs::Int=1200)
+    # X: Ψ_minus, Y: Ψ_plus
     layer_2_size = Int(layer_1_size // 2)
-
-    model = get_model(size(data, 1), layer_1_size, layer_2_size, latent_dim, device)
-
-    loader = Flux.DataLoader(data, batchsize=128, shuffle=false, partial=false);
-
-    opt_state = Flux.setup(Optimiser([Flux.Adam(0.0003)]), model)  # will store optimiser momentum, etc.
-
-    # Training loop, using the whole data set 1000 times:
+    model = get_model(size(X, 1), layer_1_size, layer_2_size, latent_dim, device)
+    loader = Flux.DataLoader((X, Y), batchsize=128, shuffle=false, partial=false)
+    opt_state = Flux.setup(Optimiser([Flux.Adam(0.0003)]), model)
     losses = zeros(T, epochs)
     best_loss = T(Inf)
     best_model = nothing
@@ -46,12 +40,11 @@ function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADe
     p = Progress(epochs)
     for epoch in 1:epochs
         loss = nothing
-        for Y in loader
-            # grads = Flux.gradient(train_one, dup_model, Const(Y)) # use Enzyme
-            grads = Flux.gradient(train_one, model, Y)
+        for (Xb, Yb) in loader
+            grads = Flux.gradient(train_one, model, Xb, Yb)
             Flux.update!(opt_state, model, grads[1])
-            loss = train_one(model, Y)
-            losses[epoch] = loss  # logging, outside gradient context
+            loss = train_one(model, Xb, Yb)
+            losses[epoch] = loss
             if (epoch > save_after) && (loss < best_loss)
                 best_model = deepcopy(model)
                 best_loss = loss
@@ -62,38 +55,41 @@ function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADe
     return best_model, losses
 end
 
-function train_one(m::Chain, y::AbstractArray{S}, α1=1.0, α2=1.0, α3=1.0, α4=1e-9) where S <: AbstractFloat
+# Overload for backward compatibility (continuous data)
+function fit_model(data::AbstractArray, T::Type, device::Union{CPUDevice, CUDADevice}=cpu_device(), layer_1_size::Int=128, latent_dim::Int=32, epochs::Int=1200)
+    X = @view data[:, 1:end-1]
+    Y = @view data[:, 2:end]
+    return fit_model(X, Y, T, device, layer_1_size, latent_dim, epochs)
+end
+
+function train_one(m::Chain, X::AbstractArray{S}, Y::AbstractArray{S}, α1=1.0, α2=1.0, α3=1.0, α4=1e-9) where S <: AbstractFloat
     enc, dec = Chain(m.layers[1:4]), Chain(m.layers[5:end])
-    Ψ = enc(y)
-    Ȳ = dec(Ψ)
+    Ψ_minus = enc(X)
+    Ψ_plus = enc(Y)
+    X̄ = dec(Ψ_minus)
+    Ȳ = dec(Ψ_plus)
 
-    reconstruction_loss = Flux.mse(Ȳ, y)
+    reconstruction_loss = Flux.mse(X̄, X)
 
-    Ψ_minus = @view Ψ[:, 1:end-1]
-    Ψ_plus = @view Ψ[:, 2:end]
-
+    # DMD operator from latent space
     K = Ψ_plus * pinv(Ψ_minus)
     F = svd(Ψ_minus)
-    # K = F.U'*Ψ_plus*F.V*inv(Diagonal(F.S))
     E, V = eigen(K)
 
-    k = V \ Ψ[:, 1]
-    A = V*Diagonal(E)*pinv(V)
-    Ψ̂ = reduce(hcat, [real.(V*Diagonal(E)^(jj)*k) for jj in collect(1:size(Ψ_minus, 2))::Vector{Int}])
-    Ŷ = dec(Ψ̂ )
+    k = V \ Ψ_minus[:, 1]
+    Ψ̂ = reduce(hcat, [real.(V*Diagonal(E)^(jj)*k) for jj in 1:size(Ψ_minus, 2)])
+    Ŷ = dec(Ψ̂)
 
     linearity_mat = Ψ_plus*(I(size(Ψ_minus, 2)) .- F.V*F.Vt)
     linearity_loss = sum(abs2, linearity_mat) / length(linearity_mat)
-    dmd_loss = Flux.mse(Ŷ, y[:, 2:end])
+    dmd_loss = Flux.mse(Ŷ, Y)
 
     l1_loss = 0
-    # Regularize encoder weights
     for layer in enc
         if hasproperty(layer, :weight)
             l1_loss += sum(abs, layer.weight)
         end
     end
-    # Regularize decoder weights
     for layer in dec
         if hasproperty(layer, :weight)
             l1_loss += sum(abs, layer.weight)
