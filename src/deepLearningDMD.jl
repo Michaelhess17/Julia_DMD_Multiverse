@@ -30,7 +30,7 @@ function fit_model(X::AbstractArray, Y::AbstractArray, T::Type, device::Union{CP
     # X: Ψ_minus, Y: Ψ_plus
     layer_2_size = Int(layer_1_size // 2)
     model = get_model(size(X, 1), layer_1_size, layer_2_size, latent_dim, device)
-    loader = Flux.DataLoader((X, Y), batchsize=128, shuffle=false, partial=false)
+    loader = Flux.DataLoader((X, Y), batchsize=128, shuffle=true, partial=false)
     opt_state = Flux.setup(Optimiser([Flux.Adam(0.0003)]), model)
     losses = zeros(T, epochs)
     best_loss = T(Inf)

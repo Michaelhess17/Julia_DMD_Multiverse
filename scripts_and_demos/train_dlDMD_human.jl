@@ -9,7 +9,7 @@ T = Float32
 
 function load_data(idx::Int, T::DataType, device::Union{CPUDevice, CUDADevice}, data_loc::String="/home/michael/Synology/Julia/data/all_human_data.npy")
     data = T.(npzread(data_loc)[idx, :, :])::Matrix{T}
-    τ, k = 1, 5
+    τ, k = 1, 10
     # data = transpose(timeDelayEmbed(data, τ, k))::AbstractArray{T}
     data = phaseOne(data; τ=τ, k=k)'
     dt = 0.01
@@ -21,7 +21,7 @@ function load_data(idx::Int, T::DataType, device::Union{CPUDevice, CUDADevice}, 
     end
 
     data .-= mean(data, dims=2)
-    data ./= std(data, dims=2)
+    # data ./= std(data, dims=2)
     return data
 end
 
@@ -33,7 +33,7 @@ max_retries = 5
 device = cpu_device()
 models = Vector{Chain}(undef, numSubjects)
 losses = Vector{Vector{T}}(undef, numSubjects)
-convergence_threshold = 5e-3
+convergence_threshold = 1.0
 p = Progress(numSubjects, color=:red)
 
 all_data = Vector{Matrix{T}}(undef, numSubjects)

@@ -2,17 +2,24 @@
 using JLD2, LinearAlgebra, CairoMakie, KernelDensity
 using StatsBase
 using LaTeXStrings
+using CSV, DataFrames
+using Measures, StatsPlots
+
 
 set_theme!(theme_latexfonts(font_size=14))
 
 include("../../utils/statistics.jl")
 
 results = load("../outputs/dlDMD_models_losses_eigs.jld2")
+meta = CSV.read("/home/michael/Synology/Julia/data/all_human_data_metadata.csv", DataFrame)
 models_states = results["models"]
 eigenvalues = results["eigs"]
 
-AB_inds = 1:30
-ST_inds = 31:72
+AB_inds = findall(meta[!, :lf_or_hf] .== "AB")
+LF_inds = findall(meta[!, :lf_or_hf] .== "LF")
+HF_inds = findall(meta[!, :lf_or_hf] .== "HF")
+ST_inds = vcat(LF_inds, HF_inds)
+
 dt = 0.01
 model_inds = CartesianIndices(eigenvalues)
 
@@ -107,6 +114,7 @@ function get_dmd_powers(m::Chain, y::AbstractArray{T}, return_eigs::Bool=false)
     K = Ψ_plus * pinv(Ψ_minus)
     
     E, V = eigen(inv(Diagonal(sqrt.(F.S)))*K*Diagonal(sqrt.(F.S)))
+    
     W = Diagonal(sqrt.(F.S))*V
 
     modes = Ψ_plus*F.V*inv(Diagonal(sqrt.(F.S)))*W
@@ -120,13 +128,13 @@ function get_dmd_powers(m::Chain, y::AbstractArray{T}, return_eigs::Bool=false)
         E, V = E[ind], V[:, ind]
         return freqs[ind], powers[ind], ω[ind], ind, E, V
     else
-        return freqs, powers, ω, ind
+        return freqs, powers, ω
     end
 end
 
 
 T = Float32
-numSubjects = 72
+numSubjects = 299
 
 all_data = [Matrix(load_data(ii, T, cpu_device())) for ii in 1:numSubjects]
 all_data = permutedims(reshape(reduce(hcat, all_data), size(all_data[1])..., length(all_data)), (3, 1, 2))
@@ -154,38 +162,38 @@ freqs_powers_ω = [get_dmd_powers(m, y) for (ii, (m, y)) in enumerate(zip(loaded
 freqs = reduce(hcat, [reverse(freq_power[1]) for freq_power in freqs_powers_ω])
 powers = reduce(hcat, [reverse(freq_power[2]) for freq_power in freqs_powers_ω])
 ωs = reduce(hcat, [reverse(freq_power[3]) for freq_power in freqs_powers_ω])
-Es = reduce(hcat, [reverse(freq_power[4]) for freq_power in freqs_powers_ω])
-Vs = permutedims(stack([freq_power[5][:, end:-1:1] for freq_power in freqs_powers_ω], dims=3), (3, 1, 2))
+Es = reduce(hcat, [reverse(freq_power[5]) for freq_power in freqs_powers_ω])
+Vs = permutedims(stack([freq_power[6][:, end:-1:1] for freq_power in freqs_powers_ω], dims=3), (3, 1, 2))
 
-for idx in 1:length(powers)
-    mask = freqs[idx] .== 0.0
-    powers[idx][mask] .= 0.0
+for idx in 1:size(powers, 2)
+    mask = freqs[:, idx] .== 0.0
+    powers[mask, idx] .= 0.0
 end 
 
 fig = Figure()
 use_AB = [12]
 use_ST = [52]
 ax = Axis(fig[1, 1], xlabel=L"\Re{\frac{\log{\lambda}}{\Delta t}}", ylabel="Freqency [Hz]")
-[CairoMakie.scatter!(ax, real.(ωs[ind]), freqs[ind], markersize=20*powers[ind]./maximum(powers[ind]), color=:dodgerblue, label="AB") for ind in use_AB]
-[CairoMakie.scatter!(ax, real.(ωs[ind]), freqs[ind], markersize=20*powers[ind]./maximum(powers[ind]), color=:crimson, label="ST") for ind in use_ST]
-CairoMakie.xlims!(ax, -2, 0.2)
+[CairoMakie.scatter!(ax, real.(ωs[:, ind]), freqs[:, ind], markersize=20*powers[:, ind]./maximum(powers[:, ind]), color=:dodgerblue, label="AB") for ind in use_AB]
+[CairoMakie.scatter!(ax, real.(ωs[:, ind]), freqs[:, ind], markersize=20*powers[:, ind]./maximum(powers[:, ind]), color=:crimson, label="ST") for ind in use_ST]
+# CairoMakie.xlims!(ax, -2, 0.2)
 axislegend(merge=true)
 save("tmp2.png", fig)
 
 
-n = 119
+
 N = size(Es, 2)
 max_rank = 24
 # Separate data for each group
-group1_eigenvalues = Es'[1:n, 1:2:max_rank]
-group2_eigenvalues = Es'[(n + 1):end, 1:2:max_rank]
+group1_eigenvalues = Es'[AB_inds, 1:2:max_rank]
+group2_eigenvalues = Es'[ST_inds, 1:2:max_rank]
 
 # Calculate the mean absolute eigenvalue for each rank in each group
 # We use `abs` because the request is for "absolute values"
-mean_abs_group1 = mean(abs.(group1_eigenvalues), dims=1)[1, :]
-mean_abs_group2 = mean(abs.(group2_eigenvalues), dims=1)[1, :]
-sem_group1 = std(abs.(group1_eigenvalues), dims=1)[1, :]# / sqrt(n)
-sem_group2 = std(abs.(group2_eigenvalues), dims=1)[1, :]# / sqrt(N - n)
+mean_abs_group1 = mean(log.(real.(group1_eigenvalues)) ./ dt, dims=1)[1, :]
+mean_abs_group2 = mean(log.(real.(group2_eigenvalues)) ./ dt, dims=1)[1, :]
+sem_group1 = std(log.(real.(group1_eigenvalues)), dims=1)[1, :]# / sqrt(n)
+sem_group2 = std(log.(real.(group2_eigenvalues)), dims=1)[1, :]# / sqrt(N - n)
 
 
 df = DataFrame(
@@ -199,8 +207,8 @@ df = DataFrame(
 jj = 1
 for i in 1:2:max_rank
     @show jj
-    push!(df, (jj, mean_abs_group1[jj], "Tied", sem_group1[jj]))
-    push!(df, (jj, mean_abs_group2[jj], "Split", sem_group2[jj]))
+    push!(df, (jj, mean_abs_group1[jj], "AB", sem_group1[jj]))
+    push!(df, (jj, mean_abs_group2[jj], "ST", sem_group2[jj]))
     jj += 1
 end
 
@@ -226,4 +234,4 @@ p = groupedbar(df.Rank, df.MeanAbsEigenvalue,
         )
 
 # You can save the plot
-savefig(p, "eigenvalue_comparison_barplot_mice.png")
+savefig(p, "eigenvalue_comparison_barplot.png")
