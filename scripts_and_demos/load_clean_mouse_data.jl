@@ -1,4 +1,4 @@
-using Parquet2, CSV
+using Parquet2
 using Glob
 using DSP, DataFrames, Tables
 using JLD2
@@ -17,17 +17,14 @@ function load_data(T, files)
     println("Number of files: ", length(files))
     for (file_idx, file) in enumerate(files)
         println("Processing file $(file_idx): $(file)")
-        if endswith(file, ".pq")
-            data = Parquet2.Dataset(file)
-        else
-            data = CSV.read(file, DataFrame)
-        end
+        # data = Parquet.read_parquet(file)
+        data = Parquet2.Dataset(file)
         columnsnames = [string(i) for i in Tables.columnnames(data)]
         df = DataFrame(data)
         index = nothing
         idex_name = "index"
         try
-            index = df[!, "index"]
+            index = DataFrame(data)[!, "index"]
         catch e
             if e isa ArgumentError
                 @warn "KeyError: 'index' column not found in file $(file)"
@@ -45,7 +42,7 @@ function load_data(T, files)
                 push!(use_columns, combination)
             end
         end
-        dt = 1/180
+        dt = 1/330
 
         responsetype = Lowpass(30.0)
         designmethod = Butterworth(4)
@@ -63,7 +60,7 @@ function load_data(T, files)
                 current_dat .-= mean(current_dat, dims=1)
                 phased_dat = nothing
                 try
-                    phased_dat = phaseOne(current_dat, τ=1, k=5)'
+                    phased_dat = phaseOne(current_dat, τ=1, k=5, steps_per_cycle=100, peaks_window_size=60)'
                 catch e
                     if e isa PyCall.PyError && occursin("SVD", string(e.val))
                         @warn "SVD Convergence error in phaser for fly $(fly), data shape: $(size(current_dat))"
