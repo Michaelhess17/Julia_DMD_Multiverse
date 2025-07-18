@@ -1,3 +1,9 @@
 *tmp*
 outputs/
 figures/
+data_cleaning/mouse_data/
+nohup.out
+*.png
+*.mat
+*.pkl
+*.npy
