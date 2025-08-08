@@ -7,3 +7,6 @@ nohup.out
 *.mat
 *.pkl
 *.npy
+*.mp4
+*.model
+data/

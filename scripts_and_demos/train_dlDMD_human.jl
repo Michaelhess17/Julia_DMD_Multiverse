@@ -1,3 +1,6 @@
+using Pkg
+Pkg.activate("..")
+Pkg.instantiate()
 using LinearAlgebra
 using Flux
 using NPZ, ProgressMeter, Plots, DSP
@@ -33,7 +36,7 @@ max_retries = 5
 device = cpu_device()
 models = Vector{Chain}(undef, numSubjects)
 losses = Vector{Vector{T}}(undef, numSubjects)
-convergence_threshold = 1.0
+convergence_threshold = 3.0
 p = Progress(numSubjects, color=:red)
 
 all_data = Vector{Matrix{T}}(undef, numSubjects)

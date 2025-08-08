@@ -54,7 +54,6 @@ Threads.@threads for jj in 1:numSubjects
         train_until_converged(f, jj, max_retries)
         next!(p)
     end
-end
 
 
 defined_indices = get_defined_indices(models)

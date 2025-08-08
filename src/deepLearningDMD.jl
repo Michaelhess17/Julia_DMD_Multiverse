@@ -16,7 +16,7 @@ function get_model(data_size::Int, layer_1_size::Int, layer_2_size::Int, latent_
     model = Chain(Dense(data_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_1_size, selu),
                     Dense(layer_1_size => layer_2_size, selu),
-                    Dense(layer_2_size => latent_dim), # ) 
+                    Dense(layer_2_size => latent_dim), 
 
                     Dense(latent_dim => layer_2_size, selu),
                     Dense(layer_2_size => layer_1_size, selu),
@@ -30,28 +30,38 @@ function fit_model(X::AbstractArray, Y::AbstractArray, T::Type, device::Union{CP
     # X: Ψ_minus, Y: Ψ_plus
     layer_2_size = Int(layer_1_size // 2)
     model = get_model(size(X, 1), layer_1_size, layer_2_size, latent_dim, device)
-    loader = Flux.DataLoader((X, Y), batchsize=128, shuffle=true, partial=false)
-    opt_state = Flux.setup(Optimiser([Flux.Adam(0.0003)]), model)
+    loader = Flux.DataLoader((X, Y), batchsize=168, shuffle=true, partial=true)
+    opt_state = Flux.setup(Optimiser([Flux.Adam(0.00003)]), model)
     losses = zeros(T, epochs)
+    fill!(losses, NaN)
     best_loss = T(Inf)
     best_model = nothing
     save_after = 1
     A = nothing
     p = Progress(epochs)
     for epoch in 1:epochs
-        loss = nothing
+        # Train the model
         for (Xb, Yb) in loader
+            if size(Xb, 2) < size(Xb, 1)
+                # @warn "Batch size smaller than data dimension, skipping batch"
+                continue
+            end
             grads = Flux.gradient(train_one, model, Xb, Yb)
             Flux.update!(opt_state, model, grads[1])
-            loss = train_one(model, Xb, Yb)
-            losses[epoch] = loss
-            if (epoch > save_after) && (loss < best_loss)
-                best_model = deepcopy(model)
-                best_loss = loss
-            end
         end
-        next!(p; showvalues = [("Best loss:", best_loss), ("Current loss", loss)])
-    end
+        # Evaluate the model
+        epoch_loss = T(0.0)
+        for (Xb, Yb) in loader
+            epoch_loss += train_one(model, Xb, Yb)
+        end
+        epoch_loss /= length(loader)
+        losses[epoch] = epoch_loss
+        if (epoch > save_after) && (epoch_loss < best_loss)
+            best_model = deepcopy(model)
+            best_loss = epoch_loss
+        end
+    next!(p; showvalues = [("Best loss:", best_loss), ("Current loss", epoch_loss)])
+end
     return best_model, losses
 end
 
@@ -72,12 +82,21 @@ function train_one(m::Chain, X::AbstractArray{S}, Y::AbstractArray{S}, α1=1.0, 
     reconstruction_loss = Flux.mse(X̄, X)
 
     # DMD operator from latent space
+    if sum(isnan, Ψ_minus) > 0 || sum(isnan, Ψ_plus) > 0
+        @warn "NaN detected in Ψ_minus or Ψ_plus"
+        return Inf
+    elseif sum(isinf, Ψ_minus) > 0 || sum(isinf, Ψ_plus) > 0
+        @warn "Inf detected in Ψ_minus or Ψ_plus"
+        return Inf
+    end
+
     K = Ψ_plus * pinv(Ψ_minus)
-    F = svd(Ψ_minus)
+    F = svd(Ψ_minus, alg=LinearAlgebra.DivideAndConquer())
     E, V = eigen(K)
 
-    k = V \ Ψ_minus[:, 1]
-    Ψ̂ = reduce(hcat, [real.(V*Diagonal(E)^(jj)*k) for jj in 1:size(Ψ_minus, 2)])
+    # k = V \ Ψ_minus[:, 1]
+    # Ψ̂ = reduce(hcat, [real.(V*Diagonal(E)^(jj)*k) for jj in 1:size(Ψ_minus, 2)])
+    Ψ̂ = K * Ψ_minus
     Ŷ = dec(Ψ̂)
 
     linearity_mat = Ψ_plus*(I(size(Ψ_minus, 2)) .- F.V*F.Vt)

@@ -7,11 +7,13 @@ include("../src/deepLearningDMD.jl")
 include("../../utils/phaser.jl")
 include("load_clean_fly_data.jl")
 T = Float32
-pattern = "*.pq"
-data_loc = "/home/michael/Synology/Python/Gait-Signatures/data/FeCo_opto_data/"
-data_loc_wt = "/home/michael/Synology/Python/Gait-Signatures/data/flyangles-dataset/"
+pattern = "**/angles/*.csv"
+data_loc = "/home/michael/Synology/Python/Gait-Signatures/data/Anipose/fly-anipose/fly-testing/"
+# data_loc_wt = "/home/michael/Synology/Python/Gait-Signatures/data/flyangles-dataset/"
 files = glob(pattern, data_loc)
-files = vcat(files, glob(pattern, data_loc_wt))
+# files = vcat(files, glob(pattern, data_loc_wt))
+
+std_cutoff = 4.5
 
 
 dats = load_data(T, files)
@@ -23,6 +25,12 @@ for (dat_idx, dat) in enumerate(dats)
     for (fly_idx, fly) in enumerate(dat)
         X = fly[1]
         Y = fly[2]
+        X_bar = mean(X, dims=2)
+        X_std = std(X, dims=2)
+        X_tmp = X .- X_bar
+        X_keep_mask = sum(abs.(X_tmp ./ X_std)  .<= std_cutoff, dims=1) .== size(X, 1)
+        X = X[:, findall(X_keep_mask[:])]
+        Y = Y[:, findall(X_keep_mask[:])]
         X_bar = mean(X, dims=2)
         X_std = std(X, dims=2)
         X .-= X_bar
@@ -57,3 +65,21 @@ Threads.@threads for jj in 1:numSubjects
     train_until_converged(f, jj, max_retries)
     next!(p)
 end
+
+
+
+plots = []
+for col_name in use_cols
+    p = @df data plot(
+        getproperty(data, col_name),
+        label = string(col_name)
+    )
+    push!(plots, p)
+end
+
+
+num_plots = length(plots)
+layout_rows = ceil(Int, sqrt(num_plots))
+layout_cols = ceil(Int, num_plots / layout_rows)
+
+combined_plot = plot(plots..., layout = (layout_rows, layout_cols), size = (800, 600))

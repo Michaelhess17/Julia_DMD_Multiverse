@@ -1,4 +1,6 @@
-
+using Pkg
+Pkg.activate("..")
+Pkg.instantiate()
 using JLD2, LinearAlgebra, CairoMakie, KernelDensity
 using StatsBase
 using LaTeXStrings
@@ -6,9 +8,9 @@ using CSV, DataFrames
 using Measures, StatsPlots
 
 
-set_theme!(theme_latexfonts(font_size=14))
+set_theme!(theme_latexfonts())
 
-include("../../utils/statistics.jl")
+# include("../../utils/statistics.jl")
 
 results = load("../outputs/dlDMD_models_losses_eigs.jld2")
 meta = CSV.read("/home/michael/Synology/Julia/data/all_human_data_metadata.csv", DataFrame)
@@ -155,10 +157,10 @@ ax = Axis(fig[1, 1], xlabel="Proportion of Variance Explained by Unitary Eigenmo
 CairoMakie.scatter!(ax, var_exp[1:length(AB_inds)], mean_transient_eigs[1:length(AB_inds)], label="Tied", color=:dodgerblue)
 CairoMakie.scatter!(ax, var_exp[length(AB_inds):end], mean_transient_eigs[length(AB_inds):end], label="Split", color=:crimson)
 axislegend(position=:lb)
-save("figures/percent_var_explained_vs_median_transient_eigs_64_dims_mice.png", fig)
+save("figures/percent_var_explained_vs_median_transient_eigs_32_dims_humans.png", fig)
 
 
-freqs_powers_ω = [get_dmd_powers(m, y) for (ii, (m, y)) in enumerate(zip(loaded_models2, all_data2)) if ii ∉ skip_inds]
+freqs_powers_ω = [get_dmd_powers(m, y, true) for (ii, (m, y)) in enumerate(zip(loaded_models, all_data)) if ii ∉ skip_inds]
 freqs = reduce(hcat, [reverse(freq_power[1]) for freq_power in freqs_powers_ω])
 powers = reduce(hcat, [reverse(freq_power[2]) for freq_power in freqs_powers_ω])
 ωs = reduce(hcat, [reverse(freq_power[3]) for freq_power in freqs_powers_ω])
@@ -171,22 +173,45 @@ for idx in 1:size(powers, 2)
 end 
 
 fig = Figure()
-use_AB = [12]
-use_ST = [52]
+use_AB = AB_inds
+use_ST = [a for a in ST_inds if a ∉ skip_inds] .- 2
 ax = Axis(fig[1, 1], xlabel=L"\Re{\frac{\log{\lambda}}{\Delta t}}", ylabel="Freqency [Hz]")
-[CairoMakie.scatter!(ax, real.(ωs[:, ind]), freqs[:, ind], markersize=20*powers[:, ind]./maximum(powers[:, ind]), color=:dodgerblue, label="AB") for ind in use_AB]
-[CairoMakie.scatter!(ax, real.(ωs[:, ind]), freqs[:, ind], markersize=20*powers[:, ind]./maximum(powers[:, ind]), color=:crimson, label="ST") for ind in use_ST]
+[CairoMakie.scatter!(ax, real.(ωs[:, ind]), freqs[:, ind], markersize=5*powers[:, ind]./maximum(powers[:, ind]), color=:dodgerblue, label="AB", alpha=0.1) for ind in use_AB]
+[CairoMakie.scatter!(ax, real.(ωs[:, ind]), freqs[:, ind], markersize=5*powers[:, ind]./maximum(powers[:, ind]), color=:crimson, label="ST", alpha=0.1) for ind in use_ST]
 # CairoMakie.xlims!(ax, -2, 0.2)
 axislegend(merge=true)
-save("tmp2.png", fig)
+save("figures/eigenvalue_scatterplot_AB_vs_ST.png", fig)
+
+# --- Kernel Density Estimate Plot ---
+fig_kde = Figure(fontsize=18)
+ax1 = Axis(fig_kde[1, 1], xlabel=L"\Re{\frac{\log{\lambda}}{\Delta t}}", ylabel="Frequency [Hz]", title="AB Group KDE", limits=(-30, 4, 0, 10.0))
+ax2 = Axis(fig_kde[1, 2], xlabel=L"\Re{\frac{\log{\lambda}}{\Delta t}}", ylabel="Frequency [Hz]", title="ST Group KDE", limits=(-30, 4, 0, 10.0))
+
+# Gather AB and ST data
+ab_real_omega = vcat([real.(ωs[:, ind]) for ind in use_AB]...)
+ab_freqs = vcat([freqs[:, ind] for ind in use_AB]...)
+st_real_omega = vcat([real.(ωs[:, ind]) for ind in use_ST]...)
+st_freqs = vcat([freqs[:, ind] for ind in use_ST]...)
+
+# Kernel density estimates
+ab_kde = kde((ab_real_omega, ab_freqs))
+st_kde = kde((st_real_omega, st_freqs))
+
+# Plot KDEs as density heatmaps (no transpose!)
+CairoMakie.plot!(ax1, ab_kde, colormap=:viridis)
+CairoMakie.plot!(ax2, st_kde, colormap=:viridis)
+
+fig_kde[1, 1] = ax1
+fig_kde[1, 2] = ax2
+save("figures/eigenvalue_kde_AB_vs_ST.png", fig_kde)
 
 
 
 N = size(Es, 2)
-max_rank = 24
+max_rank = 12
 # Separate data for each group
 group1_eigenvalues = Es'[AB_inds, 1:2:max_rank]
-group2_eigenvalues = Es'[ST_inds, 1:2:max_rank]
+group2_eigenvalues = Es'[use_ST, 1:2:max_rank]
 
 # Calculate the mean absolute eigenvalue for each rank in each group
 # We use `abs` because the request is for "absolute values"
@@ -221,7 +246,7 @@ p = groupedbar(df.Rank, df.MeanAbsEigenvalue,
         group = df.Group, # This tells groupedbar how to group the bars
         ylabel = L"\Re{\frac{\log{\lambda}}{\Delta t}}",
         xlabel = L"\lambda \quad \textrm{Rank}",
-        legend = :bottomleft,
+        legend = :topright,
         yerr= df.yErr,
         # palette = :Set1,
         palette = [:dodgerblue, :crimson],
@@ -234,4 +259,4 @@ p = groupedbar(df.Rank, df.MeanAbsEigenvalue,
         )
 
 # You can save the plot
-savefig(p, "eigenvalue_comparison_barplot.png")
+savefig(p, "figures/eigenvalue_comparison_barplot.png")
