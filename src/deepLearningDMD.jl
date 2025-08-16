@@ -3,6 +3,7 @@ using LinearAlgebra
 using Plots, NPZ
 using DSP
 using JLD2
+using GenericLinearAlgebra
 # using Enzyme
 # using BackwardsLinalg
 
@@ -30,7 +31,7 @@ function fit_model(X::AbstractArray, Y::AbstractArray, T::Type, device::Union{CP
     # X: Ψ_minus, Y: Ψ_plus
     layer_2_size = Int(layer_1_size // 2)
     model = get_model(size(X, 1), layer_1_size, layer_2_size, latent_dim, device)
-    loader = Flux.DataLoader((X, Y), batchsize=168, shuffle=true, partial=true)
+    loader = Flux.DataLoader((X, Y), batchsize=256, shuffle=true, partial=false)
     opt_state = Flux.setup(Optimiser([Flux.Adam(0.00003)]), model)
     losses = zeros(T, epochs)
     fill!(losses, NaN)
@@ -43,8 +44,8 @@ function fit_model(X::AbstractArray, Y::AbstractArray, T::Type, device::Union{CP
         # Train the model
         for (Xb, Yb) in loader
             if size(Xb, 2) < size(Xb, 1)
-                # @warn "Batch size smaller than data dimension, skipping batch"
-                continue
+                @warn "Batch size smaller than data dimension, SVD may be unstable"
+                # continue
             end
             grads = Flux.gradient(train_one, model, Xb, Yb)
             Flux.update!(opt_state, model, grads[1])
@@ -91,8 +92,8 @@ function train_one(m::Chain, X::AbstractArray{S}, Y::AbstractArray{S}, α1=1.0, 
     end
 
     K = Ψ_plus * pinv(Ψ_minus)
-    F = svd(Ψ_minus, alg=LinearAlgebra.DivideAndConquer())
-    E, V = eigen(K)
+    F = GenericLinearAlgebra.svd(Ψ_minus)
+    # E, V = eigen(K)
 
     # k = V \ Ψ_minus[:, 1]
     # Ψ̂ = reduce(hcat, [real.(V*Diagonal(E)^(jj)*k) for jj in 1:size(Ψ_minus, 2)])
@@ -100,7 +101,7 @@ function train_one(m::Chain, X::AbstractArray{S}, Y::AbstractArray{S}, α1=1.0, 
     Ŷ = dec(Ψ̂)
 
     linearity_mat = Ψ_plus*(I(size(Ψ_minus, 2)) .- F.V*F.Vt)
-    linearity_loss = sum(abs2, linearity_mat) / length(linearity_mat)
+    linearity_loss = norm(linearity_mat)
     dmd_loss = Flux.mse(Ŷ, Y)
 
     l1_loss = 0

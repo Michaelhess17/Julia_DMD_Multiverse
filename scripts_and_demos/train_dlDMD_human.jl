@@ -1,30 +1,33 @@
 using Pkg
-Pkg.activate("..")
+Pkg.activate("/home/michael/Synology/Julia/Julia_DMD_Multiverse")
 Pkg.instantiate()
 using LinearAlgebra
 using Flux
 using NPZ, ProgressMeter, Plots, DSP
 using PyCall
 
-include("../src/deepLearningDMD.jl")
-include("../utils/phaser.jl")
+include("/home/michael/Synology/Julia/Julia_DMD_Multiverse/src/deepLearningDMD.jl")
+include("/home/michael/Synology/Julia/utils/phaser.jl")
 T = Float32
 
-function load_data(idx::Int, T::DataType, device::Union{CPUDevice, CUDADevice}, data_loc::String="/home/michael/Synology/Julia/data/all_human_data.npy")
+function load_data(idx::Int, T::DataType, device::Union{CPUDevice, CUDADevice}, data_loc::String="/home/michael/Synology/Julia/data/all_human_data.npy", τ::Int=1, k::Int=20, steps_per_cycle::Int=100, filter_freq::Float64=5.5, mean_center::Bool=true, std_normalize::Bool=false)::Matrix{T}
     data = T.(npzread(data_loc)[idx, :, :])::Matrix{T}
-    τ, k = 1, 10
     # data = transpose(timeDelayEmbed(data, τ, k))::AbstractArray{T}
-    data = phaseOne(data; τ=τ, k=k)'
-    dt = 0.01
+    data = phaseOne(data; τ=τ, k=k, steps_per_cycle=steps_per_cycle)'
+    dt = 1/steps_per_cycle
 
-    responsetype = Lowpass(5.5)
+    responsetype = Lowpass(filter_freq)
     designmethod = Butterworth(4)
     for jj in 1:size(data, 1)
-        data[jj, :] = filtfilt(digitalfilter(responsetype, designmethod; fs=Int(1/dt)), data[jj, :])
+        data[jj, :] = filtfilt(digitalfilter(responsetype, designmethod; fs=steps_per_cycle), data[jj, :])
     end
 
-    data .-= mean(data, dims=2)
-    # data ./= std(data, dims=2)
+    if mean_center
+        data .-= mean(data, dims=2)
+    end
+    if std_normalize
+        data ./= std(data, dims=2)
+    end
     return data
 end
 
@@ -36,7 +39,7 @@ max_retries = 5
 device = cpu_device()
 models = Vector{Chain}(undef, numSubjects)
 losses = Vector{Vector{T}}(undef, numSubjects)
-convergence_threshold = 3.0
+convergence_threshold = 15.0
 p = Progress(numSubjects, color=:red)
 
 all_data = Vector{Matrix{T}}(undef, numSubjects)
