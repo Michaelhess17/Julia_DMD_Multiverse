@@ -14,7 +14,7 @@ function load_data(T::DataType)
     data = T.(npzread(data_loc))[:, 1:2:end, :]
     speeds = T.(npzread(speed_loc))[:, 1, :]
 
-    fs = 100
+    fs = 165
     responsetype = Lowpass(16)
     designmethod = Butterworth(4)
     for ii in size(data, 1)
@@ -24,7 +24,7 @@ function load_data(T::DataType)
     end
 
     data .-= mean(data, dims=2)
-    data ./= std(data, dims=2)
+    # data ./= std(data, dims=2)
     τ, k = 1, 2
     data = permutedims(cat([transpose(timeDelayEmbed(data[idx, :, :], τ, k))::AbstractArray{T} for idx in 1:size(data, 1)]..., dims=3), (3, 2, 1))
     return data, speeds

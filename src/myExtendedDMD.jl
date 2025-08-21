@@ -101,30 +101,3 @@ function fitExtendedDMD(data, τ, k, phase_data, frequencies; steps_per_cycle=10
     # Return the results
     return K, b, F, reconstruction_error, proj, phased_data
 end
-
-errors = Vector{Float32}(undef, length(all_data))
-all_phased_data = Vector{Matrix{Float32}}(undef, length(all_data))
-all_projs = Vector{Matrix{ComplexF32}}(undef, length(all_data))
-Ks = Vector{Matrix{ComplexF32}}(undef, length(all_data))
-bs = Vector{Vector{ComplexF32}}(undef, length(all_data))
-Fs = Vector{SVD{ComplexF64, Float64, Transpose{ComplexF64, Matrix{ComplexF64}}, Vector{Float64}}}(undef, length(all_data))
-
-τ = 2
-k = 25
-phase_data = true  # Whether to phase the data before applying Extended DMD
-frequencies = 0.5:0.5:20
-steps_per_cycle = 100
-n_original_features = 6  # Number of original features in the data
-bias = true  # Whether to include a bias term in the DMD model
-
-p = Progress(length(all_data), desc="Fitting Extended DMD...")
-for ii in 1:length(all_data)
-    K, b, F, reconstruction_error, proj, phased_data = fitExtendedDMD(all_data[ii], τ, k, phase_data, frequencies; steps_per_cycle=steps_per_cycle, n_original_features=n_original_features, bias=bias)
-    errors[ii] = reconstruction_error
-    all_phased_data[ii] = phased_data
-    all_projs[ii] = proj
-    Ks[ii] = K
-    bs[ii] = b
-    Fs[ii] = F
-    next!(p)
-end
