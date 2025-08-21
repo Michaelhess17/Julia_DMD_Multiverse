@@ -1,5 +1,3 @@
-using DrWatson
-quickactivate("/home/michael/Documents/Julia/DMD/env")
 using LinearAlgebra
 using Plots
 using Distributions, Random, Statistics
